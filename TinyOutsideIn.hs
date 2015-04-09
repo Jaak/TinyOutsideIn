@@ -253,9 +253,9 @@ unifyTypes ty1 ty2 = go ty1 ty2
     go (TyVar k x) (TyVar k' x')
       | k /= k' = tcThrow (ErrKindMismatch ty1 ty2)
       | x == x' = return True
-    go (TyVar k (VarMeta x)) t2 = unifyMetaTyVar swapped k x t2
-    go t1 (TyVar k (VarMeta y)) = unifyMetaTyVar (not swapped) k y t1
-    go t1 t2 | isSizeType t1, isSizeType t2 = delayUnif swapped t1 t2 >> return False
+    go (TyVar k (VarMeta x)) t2 = unifyMetaTyVar False k x t2
+    go t1 (TyVar k (VarMeta y)) = unifyMetaTyVar True k y t1
+    go t1 t2 | isSizeType t1, isSizeType t2 = delayUnif False t1 t2 >> return False
     go (TyApp c ts) (TyApp c' ts')
       | c == c', length ts == length ts' = or <$> zipWithM go ts ts'
     go t1 t2 = tcThrow (ErrUnifFail t1 t2)
@@ -567,6 +567,13 @@ exBug = (e, t)
     e = letE "t" (ExprTypeIf (EqPred n 0) "zero" "one") "t"
     t = mkIntType n
 
+-- This is actually a bug!
+exBug2 :: (Expr, Type)
+exBug2 = (e, t)
+  where
+    e = letE "x" "zero" $ ExprTypeIf (EqPred n 0) "x" "x"
+    t = mkIntType n
+
 -- run "printWanted exFoo" for instance
 printWanted :: (Expr, Type) -> IO ()
 printWanted (e, t) = runTcM $ do
@@ -590,8 +597,6 @@ initialTypeEnv =
 {--------------------------------
  -- Simple type checking monad --
  --------------------------------}
-
-instance Exception TcError where
 
 data TcEnv = TcEnv {
     _tyLevel :: Int,
