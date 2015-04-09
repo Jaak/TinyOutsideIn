@@ -516,17 +516,25 @@ n = mkSizeVarType "n"
 m = mkSizeVarType "m"
 k = mkSizeVarType "k"
 
+infixl 0 $$
 ($$) :: Expr -> Expr -> Expr
 x $$ y = ExprApp x y
 
+infix 4 ~~
+(~~) :: Type -> Type -> TypePred
+(~~) = EqPred
+
 addE :: Expr -> Expr -> Expr
-addE e1 e2 = ("add" $$ e1) $$ e2
+addE e1 e2 = "add" $$ e1 $$ e2
 
 catE :: Expr -> Expr -> Expr
-catE e1 e2 = ("cat" $$ e1) $$ e2
+catE e1 e2 = "cat" $$ e1 $$ e2
 
 letT :: Name -> Type -> Expr -> Expr -> Expr
 letT x t e1 e2 = ExprLet x (Just t) e1 e2
+
+ifE :: TypePred -> Expr -> Expr -> Expr
+ifE = ExprTypeIf
 
 letE :: Name -> Expr -> Expr -> Expr
 letE x e1 e2 = ExprLet x Nothing e1 e2
@@ -535,14 +543,14 @@ exFoo :: (Expr, Type)
 exFoo = (e, t)
   where
     t = mkIntType n `mkFunType` mkIntType n
-    e = ExprLam "x" ("x" `addE` ExprTypeIf (EqPred n 0) "zero" ("x" `addE` "one"))
+    e = ExprLam "x" ("x" `addE` ifE (n ~~ 0) "zero" ("x" `addE` "one"))
 
 -- map (\x -> x.0)
 exFsts :: (Expr, Type)
 exFsts = (e, t)
   where
     t = mkListType (mkPairType a b) `mkFunType` mkListType a
-    e = ExprApp "map" (ExprLam "x" (ExprSelect "x" 0))
+    e = "map" $$ ExprLam "x" (ExprSelect "x" 0)
 
 -- PrefixOR, but uses sum (instead of OR) as what really matters are types.
 exPrefixOR :: (Expr, Type)
@@ -551,8 +559,8 @@ exPrefixOR = (e, t)
     t = mkIntType n `mkFunType` mkIntType n
     nHalf = mkDivType n 2
     e = ExprLam "p" $
-      ExprTypeIf (EqPred n 0) "p" $
-        ExprTypeIf (EqPred n 1) "p" $
+      ifE (n ~~ 0) "p" $
+        ifE (n ~~ 1) "p" $
           letE "x" ("prefixOR" $$ ExprSlice "p" 0 nHalf) $
           letE "y" ("prefixOR" $$ ExprSlice "p" nHalf n) $
           letE "b" ("zext" $$ ExprSlice "y" 0 1) $
@@ -563,13 +571,13 @@ exPrefixOR = (e, t)
 exTest1 :: (Expr, Type)
 exTest1 = (e, t)
   where
-    e = letE "t" (ExprTypeIf (EqPred n 0) "zero" "one") "t"
+    e = letE "t" (ifE (n ~~ 0) "zero" "one") "t"
     t = mkIntType n
 
 exTest2 :: (Expr, Type)
 exTest2 = (e, t)
   where
-    e = letE "x" ("zext" $$ "zero") $ ExprTypeIf (EqPred n 0) "x" "x"
+    e = letE "x" ("zext" $$ "zero") $ ifE (n ~~ 0) "x" "x"
     t = mkIntType n
 
 -- run "printWanted exFoo" for instance
