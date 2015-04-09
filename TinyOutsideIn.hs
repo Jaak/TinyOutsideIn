@@ -309,23 +309,22 @@ simplifyConstr :: Constr -> TcM Constr
 simplifyConstr origConstr = do
   continueRef <- tcNewRef False
   let
-    goC _ ConstrEmpty = pure ConstrEmpty
-    goC l (ConstrWanted p) = goP l p
-    goC l (ConstrAnd c1 c2) = constrAnd <$> goC l c1 <*> goC l c2
-    goC l (ConstrImpl p c) = ConstrImpl p <$> goC (l + 1) c
+    goC ConstrEmpty = pure ConstrEmpty
+    goC (ConstrWanted p) = goP p
+    goC (ConstrAnd c1 c2) = constrAnd <$> goC c1 <*> goC c2
+    goC (ConstrImpl p c) = ConstrImpl p <$> tcWithNextLevel (goC c)
 
-    goP l (EqPred t1 t2) =
-      tcCollectWanted $
-        tcWithLevel l $ do
-          b <- unifyTypes t1 t2
-          when b $
-            tcWriteRef continueRef True
-    goP l (AndPred p1 p2) = constrAnd <$> goP l p1 <*> goP l p2
-    goP _ p = pure (ConstrWanted p)
+    goP (EqPred t1 t2) =
+      tcCollectWanted $ do
+        b <- unifyTypes t1 t2
+        when b $
+          tcWriteRef continueRef True
+    goP (AndPred p1 p2) = constrAnd <$> goP p1 <*> goP p2
+    goP p = pure (ConstrWanted p)
   
     loop c = do
       tcWriteRef continueRef False
-      c' <- goC 0 c
+      c' <- goC c
       b <- tcReadRef continueRef
       if b
         then loop c'
@@ -560,18 +559,17 @@ exPrefixOR = (e, t)
           letE "r" (addE "x" "b") $
           catE "r" "y"
 
--- used to be one
-exBug :: (Expr, Type)
-exBug = (e, t)
+-- used to be a bug
+exTest1 :: (Expr, Type)
+exTest1 = (e, t)
   where
     e = letE "t" (ExprTypeIf (EqPred n 0) "zero" "one") "t"
     t = mkIntType n
 
--- This is actually a bug!
-exBug2 :: (Expr, Type)
-exBug2 = (e, t)
+exTest2 :: (Expr, Type)
+exTest2 = (e, t)
   where
-    e = letE "x" "zero" $ ExprTypeIf (EqPred n 0) "x" "x"
+    e = letE "x" ("zext" $$ "zero") $ ExprTypeIf (EqPred n 0) "x" "x"
     t = mkIntType n
 
 -- run "printWanted exFoo" for instance
