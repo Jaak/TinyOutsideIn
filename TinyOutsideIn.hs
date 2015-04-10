@@ -32,6 +32,10 @@ data TyVar
   | VarMeta (IORef TyMeta) -- unifiable (or linked to some type)
   deriving (Eq, Typeable)
 
+data TyMeta
+  = MetaFlex Level Unique
+  | MetaLink Type
+
 instance IsString TyVar where
   fromString = VarCon
 
@@ -47,10 +51,6 @@ data Kind
   = KindType
   | KindSize
   deriving (Eq, Show, Typeable)
-
-data TyMeta
-  = MetaFlex Level Unique
-  | MetaLink Type
 
 data TypeCon
   = TyConInt            -- t ::= int[s]
@@ -103,6 +103,9 @@ andTypePred TruePred b = b
 andTypePred a TruePred = a
 andTypePred a b = AndPred a b
 
+-- Note that we only allow equality of size types and not regular ones.  This
+-- is just a simplification, nothing fundamental stops us from supporting
+-- general type equality.
 kindCheckPred :: TypePred -> Bool
 kindCheckPred TruePred = True
 kindCheckPred (AndPred p1 p2) = kindCheckPred p1 && kindCheckPred p2
@@ -139,7 +142,7 @@ instance Show Type where
     | TyConDiv <- con, [s1, s2] <- ts = "(" ++ show s1 ++ " / " ++ show s2 ++ ")"  
     | TyConSub <- con, [s1, s2] <- ts = "(" ++ show s1 ++ " - " ++ show s2 ++ ")"  
     | TyConWidth <- con, [s] <- ts = "width " ++ show s
-    | otherwise = error "oops"
+    | otherwise = "<ill formed type>"
 
 mkIntType :: Type -> Type
 mkIntType s = TyApp TyConInt [s]
@@ -205,10 +208,10 @@ data TypeScheme
  -----------------}
 
 data Constr
-  = ConstrEmpty                -- e
-  | ConstrWanted TypePred      -- C
-  | ConstrAnd Constr Constr    -- Q, Q
-  | ConstrImpl TypePred Constr -- C -> Q
+  = ConstrEmpty                -- c ::= \varepsilon
+  | ConstrWanted TypePred      --    |  p
+  | ConstrAnd Constr Constr    --    |  c1, c2
+  | ConstrImpl TypePred Constr --    |  p -> c
   deriving (Eq)
 
 instance Show Constr where
@@ -365,13 +368,13 @@ replaceFlex = goC
  ---------------------}
 
 data Expr
-  = ExprVar Name                         -- x
-  | ExprLam Name Expr                    -- \x -> e
-  | ExprApp Expr Expr                    -- e1 e2
-  | ExprLet Name (Maybe Type) Expr Expr  -- let x = e1 in e2
-  | ExprSelect Expr Int                  -- e.i
-  | ExprTypeIf TypePred Expr Expr        -- if P then e1 else e2
-  | ExprSlice Expr Type Type             -- e[s1 : s2]
+  = ExprVar Name                         -- e ::= x
+  | ExprLam Name Expr                    --    |  \x -> e
+  | ExprApp Expr Expr                    --    |  e1 e2
+  | ExprLet Name (Maybe Type) Expr Expr  --    |  let x = e1 in e2
+  | ExprSelect Expr Int                  --    |  e.i
+  | ExprTypeIf TypePred Expr Expr        --    |  if p then e1 else e2
+  | ExprSlice Expr Type Type             --    |  e[s1 : s2]
 
 instance IsString Expr where
   fromString = ExprVar
