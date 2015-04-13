@@ -103,18 +103,6 @@ andTypePred TruePred b = b
 andTypePred a TruePred = a
 andTypePred a b = AndPred a b
 
--- Note that we only allow equality of size types and not regular ones.  This
--- is just a simplification, nothing fundamental stops us from supporting
--- general type equality.
-kindCheckPred :: TypePred -> Bool
-kindCheckPred TruePred = True
-kindCheckPred (AndPred p1 p2) = kindCheckPred p1 && kindCheckPred p2
-kindCheckPred (NotPred p) = kindCheckPred p
-kindCheckPred (HasFieldPred t1 _ t2) = kindCheck KindType t1 && kindCheck KindType t2
-kindCheckPred (EqPred t1 t2) = isSizeType t1 && isSizeType t2
-kindCheckPred (LessPred t1 t2) = isSizeType t1 && isSizeType t2
-kindCheckPred (LessEqualPred t1 t2) = isSizeType t1 && isSizeType t2
-
 data Type
   = TyVar Kind TyVar
   | TyApp TypeCon [Type]
@@ -180,6 +168,11 @@ mkDivType t1 t2 = TyApp TyConDiv [t1, t2]
 mkWidthType :: Type -> Type
 mkWidthType t1 = TyApp TyConWidth [t1]
 
+{-------------------
+ -- Kind checking --
+ -------------------}
+
+-- | Kind checking. Also verify that the type is well formed.
 kindCheck :: Kind -> Type -> Bool
 kindCheck k (TyVar k' _) = k == k'
 kindCheck KindType (TyApp con ts) 
@@ -197,8 +190,26 @@ kindCheck KindSize (TyApp con ss)
   | TyConWidth <- con, [s] <- ss = isSizeType s
 kindCheck _ _ = False
 
+-- | Check is given type is a size type.
+-- Expects kind checked type!
 isSizeType :: Type -> Bool
-isSizeType = kindCheck KindSize
+isSizeType (TyVar KindSize) = True
+isSizeType (TyApp con _) = isSizeTyCon con
+isSizeType _ = False
+
+-- Note that we only allow equality predicate between size types in user
+-- written code and not equality between regular types.  This is just a
+-- simplification, nothing fundamental stops us from supporting general type
+-- equality. During unification predicates between regular types may also be
+-- emitted.
+kindCheckPred :: TypePred -> Bool
+kindCheckPred TruePred = True
+kindCheckPred (AndPred p1 p2) = kindCheckPred p1 && kindCheckPred p2
+kindCheckPred (NotPred p) = kindCheckPred p
+kindCheckPred (HasFieldPred t1 _ t2) = kindCheck KindType t1 && kindCheck KindType t2
+kindCheckPred (EqPred t1 t2) = isSizeType t1 && isSizeType t2
+kindCheckPred (LessPred t1 t2) = isSizeType t1 && isSizeType t2
+kindCheckPred (LessEqualPred t1 t2) = isSizeType t1 && isSizeType t2
 
 data TypeScheme
   = TypeForall [Name] TypePred Type -- \forall a1 a2 ... an. p => t
@@ -245,11 +256,16 @@ data TypeError
   | ErrNotSizeType Type
   | ErrFreeVariableInTypeScheme Name
   | ErrFreeVariable Name
+  | ErrICE -- internal compile error
   deriving (Show, Typeable)
 
 instance Exception TypeError
 
--- | Returns true if any meta variables have been unified.
+-- | Type unification. Returns true if any meta variables have been unified.
+-- The first parameter is the expected type and the second one is what we are
+-- checking against. The type errors should be in the form "expected ty1, got
+-- ty2". Some care has been taken to make sure that those errors are in correct
+-- order.
 unifyTypes :: Type -> Type -> TcM Bool
 unifyTypes ty1 ty2 = go ty1 ty2
   where
@@ -263,7 +279,8 @@ unifyTypes ty1 ty2 = go ty1 ty2
       | c == c', length ts == length ts' = or <$> zipWithM go ts ts'
     go t1 t2 = tcThrow (ErrUnifFail t1 t2)
 
--- Size and type variables are handled differently by unification.  Type
+-- | Try to unify a meta variable "u" with type "t". Performs occurs check if needed.
+-- Size and type variables are handled differently by unification. Type
 -- variables can not be solved if occurs check fails and as we do not have
 -- dependent (only size dependent!) types we don't have to bother with
 -- tracking untouchable variables.
@@ -283,6 +300,9 @@ unifyMetaTyVar swapped k u t = do
         then delayUnif swapped (TyVar k (VarMeta u)) t >> return False
         else tcWriteRef u (MetaLink t) >> return True
 
+-- | Delay unification between to types until later solving.
+-- Equality of size types is definitely always delayed but also unification of
+-- untouchable variable is delayed.
 delayUnif :: Bool -> Type -> Type -> TcM ()
 delayUnif True  t1 t2 = tcAddWanted (EqPred t2 t1)
 delayUnif False t1 t2 = tcAddWanted (EqPred t1 t2)
@@ -292,6 +312,7 @@ tcFreshMetaTyVar = do
   flex <- MetaFlex <$> tcGetLevel <*> tcNextUnique
   VarMeta <$> tcNewRef flex
 
+-- | Occurs check.
 occursIn :: IORef TyMeta -> Type -> TcM Bool
 occursIn u = go
   where
@@ -306,8 +327,9 @@ occursIn u = go
           MetaFlex _ _ -> return False
     go (TyApp con ts) = or <$> mapM go ts
 
--- This simplifies the system of constaints.
--- It is not meant to solve all of the existentials.
+-- | Constraint simplification. It is not meant to solve all of the
+-- existentials. The resulting constaints are the ones that could not be
+-- solved.
 simplifyConstr :: Constr -> TcM Constr
 simplifyConstr origConstr = do
   continueRef <- tcNewRef False
@@ -387,8 +409,10 @@ tcFreshVar :: Kind -> TcM Type
 tcFreshVar k = TyVar k <$> tcFreshMetaTyVar
 
 tcFreshTypeVar :: TcM Type
-tcFreshTypeVar = TyVar KindType <$> tcFreshMetaTyVar
+tcFreshTypeVar = tcFreshVar KindType
 
+-- | Instantiate \forall bound variables in type scheme with fresh meta
+-- variables.
 -- TODO: for all size variables "n" in the type we need constaint "0 <= n".
 tcInstantiateScheme :: TypeScheme -> TcM (TypePred, Type)
 tcInstantiateScheme (TypeForall xs forallPred forallBody) = do
@@ -422,17 +446,19 @@ tcInstantiateScheme (TypeForall xs forallPred forallBody) = do
 
   (,) <$> subPred forallPred <*> subTy forallBody
 
+-- | Check that "width" is computed of non-negative integers and
+-- devision-by-zero is impossible. For sake of simplicity we just check that
+-- the divisor is a positive integer.
 tcCheckType :: Type -> TcM ()
 tcCheckType (TyVar _ _) = return ()
-tcCheckType (TyApp con ts)
-  | TyConDiv <- con, [s1, s2] <- ts = do
-    tcAddWanted (LessPred (mkSizeLit 0) s2)
-    mapM_ tcCheckType ts
-  | TyConSub <- con, [s1, s2] <- ts = do
-    tcAddWanted (LessEqualPred s1 s2)
-    mapM_ tcCheckType ts
-  | otherwise = mapM_ tcCheckType ts
+tcCheckType (TyApp con ts) = do
+  case con of
+    TyConWidth | [s] <- ts -> tcAddWanted (LessEqualPred 0 s)
+    TyConDiv | [_, s2] <- ts -> tcAddWanted (LessPred 0 s2)
+    _ -> return ()
+  mapM_ tcCheckType ts
 
+-- | Check that types inside a predicate are good (see tcCheckType).
 tcCheckTypePred :: TypePred -> TcM ()
 tcCheckTypePred TruePred = return ()
 tcCheckTypePred (NotPred p1) = tcCheckTypePred p1
@@ -442,14 +468,14 @@ tcCheckTypePred (EqPred t1 t2) = tcCheckType t1 >> tcCheckType t2
 tcCheckTypePred (LessPred t1 t2) = tcCheckType t1 >> tcCheckType t2
 tcCheckTypePred (LessEqualPred t1 t2) = tcCheckType t1 >> tcCheckType t2
 
--- Type inference
+-- | Expression type inference.
 tcInferExpr :: Expr -> TcM Type
 tcInferExpr e = do
   t <- tcFreshTypeVar
   tcExpr t e
   return t
 
--- Type checking
+-- | Expression type checking.
 tcExpr :: Type -> Expr -> TcM ()
 tcExpr resTy (ExprVar x) = do
   schemeTy <- tcLookupScheme x
@@ -470,14 +496,15 @@ tcExpr resTy (ExprLam x e) = do
 tcExpr resTy (ExprApp e1 e2) = do
   e1Ty <- tcInferExpr e1
   e2Ty <- tcInferExpr e2
-  void (unifyTypes e1Ty (e2Ty `mkFunType` resTy))
+  void (unifyTypes (e2Ty `mkFunType` resTy) e1Ty)
 tcExpr resTy (ExprLet x Nothing e1 e2) = do
   t <- tcInferExpr e1
   tcSetVarTy x t $
     tcExpr resTy e2
 tcExpr resTy (ExprLet x (Just t) e1 e2) = do
   tcExpr t e1
-  tcSetVarTy x t (tcExpr resTy e2)
+  tcSetVarTy x t $
+    tcExpr resTy e2
 tcExpr resTy (ExprSelect e i) = do
   structTy <- tcInferExpr e
   tcAddWanted (HasFieldPred structTy i resTy)
@@ -500,6 +527,7 @@ tcExpr resTy (ExprSlice e s1 s2)
     tcExpr (mkIntType n) e
     unifyTypes resTy (mkIntType (mkSubType s2 s1))
     -- 0 <= s1 <= s2 <= n
+    tcAddWanted (LessEqualPred 0 s1)
     tcAddWanted (LessEqualPred s1 s2)
     tcAddWanted (LessEqualPred s2 n)
 
